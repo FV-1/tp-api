@@ -27,7 +27,69 @@ tags:
     description: Sondes de santé
 
 paths:
-  # TODO : POST /v1/sandboxes (createSandbox), GET /v1/sandboxes (listSandboxes)
+  /v1/sandboxes:
+    post:
+      tags: [sandboxes]
+      operationId: createSandbox
+      summary: Créer une sandbox
+      description: Accepte la création de façon asynchrone. La sandbox est initialement en état pending.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SandboxCreate"
+      responses:
+        "202":
+          description: Création acceptée.
+          headers:
+            Location:
+              description: URI permettant de consulter la sandbox créée.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sandbox"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+    get:
+      tags: [sandboxes]
+      operationId: listSandboxes
+      summary: Lister les sandboxes
+      description: Renvoie une page de sandboxes, éventuellement filtrée par état.
+      parameters:
+        - name: status
+          in: query
+          description: Filtrer les sandboxes par état.
+          schema:
+            $ref: "#/components/schemas/SandboxStatus"
+        - name: page_size
+          in: query
+          description: Nombre maximal de sandboxes dans la page.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: page_token
+          in: query
+          description: Jeton reçu dans next_page_token pour obtenir la page suivante.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Page de sandboxes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SandboxList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
 
   /v1/sandboxes/{sandbox_id}:
     parameters:
@@ -46,7 +108,42 @@ paths:
                 $ref: "#/components/schemas/Sandbox"
         "404":
           $ref: "#/components/responses/NotFound"
-    # TODO : PATCH (updateSandbox), DELETE (deleteSandbox)
+    patch:
+      tags: [sandboxes]
+      operationId: updateSandbox
+      summary: Prolonger la durée de vie d'une sandbox
+      description: Met à jour la durée de vie avec JSON Merge Patch.
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              $ref: "#/components/schemas/SandboxPatch"
+      responses:
+        "200":
+          description: Sandbox mise à jour.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sandbox"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+    delete:
+      tags: [sandboxes]
+      operationId: deleteSandbox
+      summary: Détruire une sandbox
+      description: Supprime la sandbox et son conteneur associé.
+      responses:
+        "204":
+          description: Sandbox détruite.
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   # TODO : POST /v1/sandboxes/{sandbox_id}/exec (execCommand)
   # TODO : GET et PUT /v1/sandboxes/{sandbox_id}/files?path=… (readFile, writeFile)
@@ -122,7 +219,40 @@ components:
         expires_at:
           type: string
           format: date-time
-    # TODO : SandboxCreate, SandboxPatch, SandboxList, ExecRequest, ExecResult
+    SandboxCreate:
+      type: object
+      additionalProperties: false
+      required: [image]
+      properties:
+        image:
+          $ref: "#/components/schemas/Image"
+        ttl_seconds:
+          type: integer
+          minimum: 60
+          maximum: 3600
+          default: 600
+        limits:
+          $ref: "#/components/schemas/Limits"
+    SandboxPatch:
+      type: object
+      additionalProperties: false
+      required: [ttl_seconds]
+      properties:
+        ttl_seconds:
+          type: integer
+          minimum: 60
+          maximum: 3600
+    SandboxList:
+      type: object
+      required: [sandboxes]
+      properties:
+        sandboxes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Sandbox"
+        next_page_token:
+          type: string
+    # TODO : ExecRequest, ExecResult
     Problem:
       type: object
       description: RFC 9457, Problem Details for HTTP APIs.
@@ -141,9 +271,28 @@ components:
           type: string
 
   responses:
+    BadRequest:
+      description: Requête mal formée ou paramètres de pagination invalides.
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}
     NotFound:
       description: Sandbox introuvable.
       content:
         application/problem+json:
           schema: {$ref: "#/components/schemas/Problem"}
-    # TODO : une réponse réutilisable par code d'erreur dont vous avez besoin
+    Conflict:
+      description: Opération incompatible avec l'état courant de la sandbox.
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}
+    UnsupportedMediaType:
+      description: Type de contenu de la requête non pris en charge.
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}
+    UnprocessableEntity:
+      description: Contenu invalide, image interdite ou valeur hors limites.
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}

@@ -12,7 +12,7 @@ info:
     commandes et lit ou écrit des fichiers.
     Toutes les erreurs suivent la RFC 9457 (application/problem+json).
   contact:
-    name: "Binôme : NOM1 / NOM2"   # TODO
+    name: "Binôme : Victor Falc'hun / Lea Debruyne"   # TODO
 servers:
   - url: http://localhost:8000
     description: Développement local

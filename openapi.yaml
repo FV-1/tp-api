@@ -56,7 +56,7 @@ paths:
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "422":
-          $ref: "#/components/responses/UnprocessableEntity"
+          $ref: "#/components/responses/ValidationFailed"
     get:
       tags: [sandboxes]
       operationId: listSandboxes
@@ -133,7 +133,7 @@ paths:
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "422":
-          $ref: "#/components/responses/UnprocessableEntity"
+          $ref: "#/components/responses/ValidationFailed"
     delete:
       tags: [sandboxes]
       operationId: deleteSandbox
@@ -145,8 +145,151 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
-  # TODO : POST /v1/sandboxes/{sandbox_id}/exec (execCommand)
-  # TODO : GET et PUT /v1/sandboxes/{sandbox_id}/files?path=… (readFile, writeFile)
+  /v1/sandboxes/{sandbox_id}/exec:
+    parameters:
+      - $ref: "#/components/parameters/SandboxId"
+    post:
+      tags: [exec]
+      operationId: execCommand
+      summary: Exécuter une commande dans la sandbox
+      description: |
+        Exécute une commande dans `/workspace`, attend sa fin et renvoie sa sortie.
+
+        La commande est une **liste d'arguments** passée telle quelle au conteneur,
+        sans shell : `|`, `>`, `*` ou `$VAR` ne sont pas interprétés. Pour un shell,
+        il faut le demander explicitement : `["sh", "-c", "ls | wc -l"]`.
+
+        Une commande qui échoue (code de sortie non nul) ou qui dépasse son délai
+        renvoie quand même **200** : l'exécution a eu lieu, et le résultat le dit
+        (`exit_code`, `timed_out`). Les codes d'erreur HTTP sont réservés aux cas
+        où rien n'a pu être exécuté. La sandbox doit être `ready`, sinon 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecRequest"
+            examples:
+              python:
+                summary: Lancer un script Python en ligne
+                value: {cmd: [python, -c, "print(1)"], timeout_seconds: 10}
+              shell:
+                summary: Passer par un shell, explicitement
+                value: {cmd: [sh, -c, "ls | wc -l"]}
+      responses:
+        "200":
+          description: |
+            La commande s'est terminée, quel que soit son code de sortie,
+            ou a été tuée à l'expiration de son délai.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecResult"
+              examples:
+                success:
+                  summary: Commande réussie
+                  value:
+                    exit_code: 0
+                    stdout: "data.csv\nmain.py\n"
+                    stderr: ""
+                    duration_ms: 42
+                    timed_out: false
+                    truncated: false
+                failure:
+                  summary: Commande en échec (code de sortie non nul)
+                  value:
+                    exit_code: 1
+                    stdout: ""
+                    stderr: "Traceback (most recent call last):\n  ...\nZeroDivisionError: division by zero\n"
+                    duration_ms: 87
+                    timed_out: false
+                    truncated: false
+                timeout:
+                  summary: Commande tuée à l'expiration du délai
+                  value:
+                    exit_code: null
+                    stdout: "début du calcul\n"
+                    stderr: ""
+                    duration_ms: 10004
+                    timed_out: true
+                    truncated: false
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/sandboxes/{sandbox_id}/files:
+    parameters:
+      - $ref: "#/components/parameters/SandboxId"
+      - $ref: "#/components/parameters/FilePath"
+    get:
+      tags: [files]
+      operationId: readFile
+      summary: Lire un fichier de /workspace
+      description: |
+        Renvoie le contenu brut du fichier, octet pour octet.
+        Chemin absent : 404. Chemin qui désigne un dossier : 409.
+        Chemin absolu ou contenant `..` : 422. La sandbox doit être `ready`, sinon 409.
+      responses:
+        "200":
+          description: Le contenu du fichier.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+              example: "print(1)\n"
+        "404":
+          $ref: "#/components/responses/FileNotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    put:
+      tags: [files]
+      operationId: writeFile
+      summary: Écrire un fichier dans /workspace
+      description: |
+        Crée le fichier, ou le remplace entièrement s'il existe. Les dossiers
+        intermédiaires sont créés. Le corps est le contenu brut (1 Mio au plus) ;
+        un corps vide crée un fichier vide.
+        Chemin qui désigne un dossier : 409. Chemin absolu ou contenant `..` : 422.
+        La sandbox doit être `ready`, sinon 409.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+            example: "print(1)\n"
+      responses:
+        "201":
+          description: "Le fichier n'existait pas : il a été créé."
+        "204":
+          description: "Le fichier existait : il a été remplacé."
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /healthz:
     get:
@@ -166,6 +309,19 @@ paths:
 
 components:
   parameters:
+    FilePath:
+      name: path
+      in: query
+      required: true
+      description: |
+        Chemin du fichier, **relatif à `/workspace`**. Refusé (422) s'il est
+        absolu (commence par `/`) ou s'il contient un segment `..`.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 4096
+        pattern: '^(?!/)(?!(.*/)?\.\.(/|$)).+$'
+      example: src/main.py
     SandboxId:
       name: sandbox_id
       in: path
@@ -269,30 +425,191 @@ components:
           type: string
         instance:
           type: string
+    ExecRequest:
+      type: object
+      additionalProperties: false
+      required: [cmd]
+      properties:
+        cmd:
+          type: array
+          description: |
+            La commande et ses arguments, sans shell. Le premier élément est
+            l'exécutable. Aucun élément ne peut être vide.
+          minItems: 1
+          maxItems: 256
+          items:
+            type: string
+            minLength: 1
+            maxLength: 4096
+          example: [python, -c, "print(1)"]
+        timeout_seconds:
+          type: integer
+          description: Délai au-delà duquel la commande est tuée (SIGKILL).
+          minimum: 1
+          maximum: 60
+          default: 10
+          example: 10
+    ExecResult:
+      type: object
+      required: [exit_code, stdout, stderr, duration_ms, timed_out, truncated]
+      properties:
+        exit_code:
+          type: [integer, "null"]
+          description: |
+            Code de sortie de la commande (127 : exécutable introuvable).
+            `null` si la commande a été tuée à l'expiration du délai.
+          minimum: 0
+          maximum: 255
+          example: 0
+        stdout:
+          type: string
+          description: |
+            Sortie standard, décodée en UTF-8 (octets invalides remplacés
+            par U+FFFD), coupée à 1 Mio.
+          example: "data.csv\nmain.py\n"
+        stderr:
+          type: string
+          description: Sortie d'erreur, mêmes règles que `stdout`.
+          example: ""
+        duration_ms:
+          type: integer
+          description: Durée totale de l'exécution, en millisecondes.
+          minimum: 0
+          example: 42
+        timed_out:
+          type: boolean
+          description: Vrai si la commande a été tuée à l'expiration de `timeout_seconds`.
+          example: false
+        truncated:
+          type: boolean
+          description: Vrai si `stdout` ou `stderr` dépassait 1 Mio et a été coupé.
+          example: false
 
   responses:
     BadRequest:
-      description: Requête mal formée ou paramètres de pagination invalides.
+      description: Requête mal formée (JSON illisible) ou paramètres de pagination invalides.
       content:
         application/problem+json:
           schema: {$ref: "#/components/schemas/Problem"}
+          example:
+            type: /errors/invalid-json
+            title: Bad Request
+            status: 400
+            detail: le corps n'est pas du JSON valide
+            instance: /v1/sandboxes/sbx-a1b2c3d4/exec
+    FileNotFound:
+      description: Sandbox introuvable, ou aucun fichier à ce chemin.
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}
+          examples:
+            file:
+              summary: Fichier absent
+              value:
+                type: /errors/file-not-found
+                title: Not Found
+                status: 404
+                detail: src/main.py n'existe pas dans /workspace
+                instance: /v1/sandboxes/sbx-a1b2c3d4/files
+            sandbox:
+              summary: Sandbox absente
+              value:
+                type: /errors/not-found
+                title: Not Found
+                status: 404
+                detail: sbx-a1b2c3d4 n'existe pas
+                instance: /v1/sandboxes/sbx-a1b2c3d4/files
+    Conflict:
+      description: |
+        Opération incompatible avec l'état courant de la sandbox : pas encore
+        prête (ou en échec, ou terminée), chemin qui désigne un dossier.
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}
+          examples:
+            not_ready:
+              summary: Sandbox pas prête
+              value:
+                type: /errors/not-ready
+                title: Conflict
+                status: 409
+                detail: sbx-a1b2c3d4 est pending, attendez qu'elle soit ready
+                instance: /v1/sandboxes/sbx-a1b2c3d4/exec
+            is_a_directory:
+              summary: Le chemin est un dossier
+              value:
+                type: /errors/is-a-directory
+                title: Conflict
+                status: 409
+                detail: src est un dossier
+                instance: /v1/sandboxes/sbx-a1b2c3d4/files
+    PayloadTooLarge:
+      description: Corps trop volumineux (1 Mio au plus).
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}
+          example:
+            type: /errors/payload-too-large
+            title: Payload Too Large
+            status: 413
+            detail: le fichier dépasse 1 Mio
+            instance: /v1/sandboxes/sbx-a1b2c3d4/files
+    UnsupportedMediaType:
+      description: Content-Type non accepté par l'opération.
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}
+          example:
+            type: /errors/unsupported-media-type
+            title: Unsupported Media Type
+            status: 415
+            detail: "attendu : application/json"
+            instance: /v1/sandboxes/sbx-a1b2c3d4/exec
+    ValidationFailed:
+      description: |
+        Corps ou paramètres hors du contrat : champ manquant, image interdite,
+        valeur hors bornes, chemin refusé.
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}
+          examples:
+            image:
+              summary: Image hors liste blanche
+              value:
+                type: /errors/validation
+                title: Unprocessable Content
+                status: 422
+                detail: "image : ubuntu n'est pas autorisée"
+                instance: /v1/sandboxes
+            body:
+              summary: Corps invalide
+              value:
+                type: /errors/validation
+                title: Unprocessable Content
+                status: 422
+                detail: "timeout_seconds : doit être entre 1 et 60"
+                instance: /v1/sandboxes/sbx-a1b2c3d4/exec
+            path:
+              summary: Chemin de fichier refusé
+              value:
+                type: /errors/validation
+                title: Unprocessable Content
+                status: 422
+                detail: "path : ../etc/passwd sort de /workspace"
+                instance: /v1/sandboxes/sbx-a1b2c3d4/files
+    ServiceUnavailable:
+      description: Le démon Docker ne répond pas ; réessayer plus tard.
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}
+          example:
+            type: /errors/docker-unavailable
+            title: Service Unavailable
+            status: 503
+            detail: le démon Docker ne répond pas
+            instance: /v1/sandboxes/sbx-a1b2c3d4/exec
     NotFound:
       description: Sandbox introuvable.
-      content:
-        application/problem+json:
-          schema: {$ref: "#/components/schemas/Problem"}
-    Conflict:
-      description: Opération incompatible avec l'état courant de la sandbox.
-      content:
-        application/problem+json:
-          schema: {$ref: "#/components/schemas/Problem"}
-    UnsupportedMediaType:
-      description: Type de contenu de la requête non pris en charge.
-      content:
-        application/problem+json:
-          schema: {$ref: "#/components/schemas/Problem"}
-    UnprocessableEntity:
-      description: Contenu invalide, image interdite ou valeur hors limites.
       content:
         application/problem+json:
           schema: {$ref: "#/components/schemas/Problem"}

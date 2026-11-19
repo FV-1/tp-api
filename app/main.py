@@ -7,14 +7,17 @@ pour exemple. À vous d'écrire les autres routes : voir le sujet, partie 2.
 """
 import base64
 import json
+import re
 import secrets
 import threading
 from datetime import datetime, timedelta, timezone
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import FastAPI, Request
+import httpx
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from . import docker
 from .errors import Problem, install
@@ -258,6 +261,9 @@ async def update_sandbox(sandbox_id: str, request: Request):
     with LOCK:
         sb = get_or_404(sandbox_id)
         current_etag = etag(sb)
+    # Le corps d'abord (415, 400, 422), les préconditions ensuite (428, 412) :
+    # une requête mal formée est refusée comme telle, quel que soit son If-Match.
+    model = await read_json(request, SandboxPatch, ("application/merge-patch+json",))
     if_match = request.headers.get("If-Match")
     if if_match is None:
         raise Problem(428, "precondition-required", "l'en-tête If-Match est obligatoire")
@@ -267,7 +273,6 @@ async def update_sandbox(sandbox_id: str, request: Request):
     if "*" not in candidates and current_etag not in candidates:
         raise Problem(412, "precondition-failed", "la sandbox a été modifiée depuis sa lecture")
 
-    model = await read_json(request, SandboxPatch, ("application/merge-patch+json",))
     with LOCK:
         sb = get_or_404(sandbox_id)
         if etag(sb) != current_etag:
@@ -300,7 +305,91 @@ def healthz():
     return {"status": "ok"}
 
 
-# ---------- reste à implémenter ----------
-# TODO execCommand     POST   /v1/sandboxes/{sandbox_id}/exec   -> docker.exec_command(...)
-# TODO readFile        GET    /v1/sandboxes/{sandbox_id}/files  -> docker.read_file(...)
-# TODO writeFile       PUT    /v1/sandboxes/{sandbox_id}/files  -> docker.write_file(...)
+# ---------- exec et fichiers ----------
+
+MAX_FILE = 1024 * 1024  # 1 Mio, comme dans le contrat
+# Même règle que le paramètre FilePath du contrat : relatif, sans segment ".." ni
+# segment vide, sans caractère de contrôle.
+SAFE_PATH = re.compile(r"(?!(.*/)?\.\.(/|$))[^\x00-\x1f/]{1,255}(/[^\x00-\x1f/]{1,255})*")
+
+Arg = Annotated[str, StringConstraints(min_length=1, max_length=4096)]
+
+
+class ExecRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cmd: list[Arg] = Field(min_length=1, max_length=256)
+    timeout_seconds: int = Field(default=10, ge=1, le=60)
+
+
+def get_ready(sandbox_id: str) -> str:
+    """Renvoie l'id du conteneur : 404 si la sandbox n'existe pas, 409 si elle n'est pas prête."""
+    with LOCK:
+        sb = get_or_404(sandbox_id)
+        if sb["status"] != "ready":
+            raise Problem(409, "not-ready", f"{sandbox_id} est en état {sb['status']}")
+        return sb["container_id"]
+
+
+def check_path(path: str) -> None:
+    """422 si le chemin sort de /workspace (absolu, segment ..) ou que Linux le refuserait."""
+    if len(path) > 1024 or not SAFE_PATH.fullmatch(path) or ".." in path.split("/"):
+        raise Problem(422, "validation", f"path : {path[:100]!r} est refusé (relatif à /workspace, sans ..)")
+    if any(len(part.encode()) > 255 for part in path.split("/")):
+        raise Problem(422, "validation", "path : un nom dépasse 255 octets")
+
+
+async def call_docker(fn, *args):
+    """Appelle le client Docker sans bloquer l'API, et traduit ses erreurs."""
+    try:
+        return await run_in_threadpool(fn, *args)
+    except docker.DockerError as exc:
+        if "not a directory" in exc.message:  # ex. a/b alors que a est un fichier
+            raise Problem(409, "not-a-directory", "un élément du chemin est un fichier, pas un dossier") from exc
+        if exc.status in (404, 409):  # conteneur supprimé ou arrêté entre-temps
+            raise Problem(409, "not-ready", f"le conteneur n'est plus disponible : {exc.message}") from exc
+        if exc.status == 400:
+            raise Problem(422, "validation", f"refusé par Docker : {exc.message}") from exc
+        raise Problem(503, "docker-unavailable", exc.message) from exc
+    except httpx.HTTPError as exc:
+        raise Problem(503, "docker-unavailable", "le démon Docker ne répond pas") from exc
+
+
+async def is_dir(cid: str, path: str) -> bool:
+    result = await call_docker(docker.exec_command, cid, ["test", "-d", path], 5)
+    return result["exit_code"] == 0
+
+
+@app.post("/v1/sandboxes/{sandbox_id}/exec")
+async def exec_command(sandbox_id: str, request: Request):
+    cid = get_ready(sandbox_id)
+    body = await read_json(request, ExecRequest, ("application/json",))
+    return await call_docker(docker.exec_command, cid, body.cmd, body.timeout_seconds)
+
+
+@app.get("/v1/sandboxes/{sandbox_id}/files")
+async def read_file(sandbox_id: str, path: str):
+    cid = get_ready(sandbox_id)
+    check_path(path)
+    data = await call_docker(docker.read_file, cid, path)
+    if data is None:
+        if await is_dir(cid, path):
+            raise Problem(409, "is-a-directory", f"{path} est un dossier")
+        raise Problem(404, "file-not-found", f"{path} n'existe pas dans /workspace")
+    return Response(data, media_type="application/octet-stream")
+
+
+@app.put("/v1/sandboxes/{sandbox_id}/files")
+async def write_file(sandbox_id: str, path: str, request: Request):
+    cid = get_ready(sandbox_id)
+    check_path(path)
+    ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if ctype != "application/octet-stream":
+        raise Problem(415, "unsupported-media-type", "attendu : application/octet-stream")
+    data = await request.body()
+    if len(data) > MAX_FILE:
+        raise Problem(413, "payload-too-large", "le fichier dépasse 1 Mio")
+    if await is_dir(cid, path):
+        raise Problem(409, "is-a-directory", f"{path} est un dossier")
+    created = await call_docker(docker.write_file, cid, path, data)
+    return Response(status_code=201 if created else 204)

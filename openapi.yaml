@@ -156,8 +156,12 @@ paths:
       parameters:
         - name: If-Match
           in: header
-          required: true
-          description: ETag reçu lors de la consultation de la sandbox.
+          required: false
+          description: |
+            ETag reçu lors de la consultation de la sandbox. **Obligatoire en
+            pratique** : sans lui, la réponse est 428 Precondition Required
+            (RFC 6585). Il n'est pas marqué `required` ici pour que son absence
+            soit décrite par la 428, et non par une erreur de validation 400/422.
           schema:
             type: string
       requestBody:
@@ -296,7 +300,8 @@ paths:
       summary: Lire un fichier de /workspace
       description: |
         Renvoie le contenu brut du fichier, octet pour octet.
-        Chemin absent : 404. Chemin qui désigne un dossier : 409.
+        Chemin absent : 404. Chemin qui désigne un dossier, ou qui passe par
+        un fichier (`a/b` alors que `a` est un fichier) : 409.
         Chemin absolu ou contenant `..` : 422. La sandbox doit être `ready`, sinon 409.
       responses:
         "200":
@@ -323,8 +328,8 @@ paths:
         Crée le fichier, ou le remplace entièrement s'il existe. Les dossiers
         intermédiaires sont créés. Le corps est le contenu brut (1 Mio au plus) ;
         un corps vide crée un fichier vide.
-        Chemin qui désigne un dossier : 409. Chemin absolu ou contenant `..` : 422.
-        La sandbox doit être `ready`, sinon 409.
+        Chemin qui désigne un dossier, ou qui passe par un fichier : 409.
+        Chemin absolu ou contenant `..` : 422. La sandbox doit être `ready`, sinon 409.
       requestBody:
         required: true
         content:
@@ -375,12 +380,14 @@ components:
       required: true
       description: |
         Chemin du fichier, **relatif à `/workspace`**. Refusé (422) s'il est
-        absolu (commence par `/`) ou s'il contient un segment `..`.
+        absolu (commence par `/`), s'il contient un segment `..`, un segment
+        vide (`a//b`, `a/`), un caractère de contrôle, ou un nom de plus de
+        255 octets (limite de Linux).
       schema:
         type: string
         minLength: 1
-        maxLength: 4096
-        pattern: '^(?!/)(?!(.*/)?\.\.(/|$)).+$'
+        maxLength: 1024
+        pattern: '^(?!(.*/)?\.\.(/|$))[^\x00-\x1f/]{1,255}(/[^\x00-\x1f/]{1,255})*$'
       example: src/main.py
     SandboxId:
       name: sandbox_id
@@ -587,7 +594,8 @@ components:
     Conflict:
       description: |
         Opération incompatible avec l'état courant de la sandbox, chemin qui
-        désigne un dossier, ou Idempotency-Key déjà utilisée avec un autre corps.
+        désigne un dossier ou passe par un fichier, ou Idempotency-Key déjà
+        utilisée avec un autre corps.
       content:
         application/problem+json:
           schema: {$ref: "#/components/schemas/Problem"}

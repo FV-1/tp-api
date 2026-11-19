@@ -33,6 +33,15 @@ paths:
       operationId: createSandbox
       summary: Créer une sandbox
       description: Accepte la création de façon asynchrone. La sandbox est initialement en état pending.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Clé facultative pour rejouer une création sans créer une seconde sandbox.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
       requestBody:
         required: true
         content:
@@ -47,6 +56,10 @@ paths:
               description: URI permettant de consulter la sandbox créée.
               schema:
                 type: string
+            ETag:
+              description: Version de la représentation de la sandbox.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -57,6 +70,10 @@ paths:
           $ref: "#/components/responses/UnsupportedMediaType"
         "422":
           $ref: "#/components/responses/ValidationFailed"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
     get:
       tags: [sandboxes]
       operationId: listSandboxes
@@ -102,6 +119,11 @@ paths:
       responses:
         "200":
           description: La sandbox.
+          headers:
+            ETag:
+              description: Version de la représentation de la sandbox.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -113,6 +135,13 @@ paths:
       operationId: updateSandbox
       summary: Prolonger la durée de vie d'une sandbox
       description: Met à jour la durée de vie avec JSON Merge Patch.
+      parameters:
+        - name: If-Match
+          in: header
+          required: true
+          description: ETag reçu lors de la consultation de la sandbox.
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -122,6 +151,11 @@ paths:
       responses:
         "200":
           description: Sandbox mise à jour.
+          headers:
+            ETag:
+              description: Nouvelle version de la représentation de la sandbox.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -130,10 +164,16 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "422":
           $ref: "#/components/responses/ValidationFailed"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
     delete:
       tags: [sandboxes]
       operationId: deleteSandbox
@@ -144,6 +184,8 @@ paths:
           description: Sandbox détruite.
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /v1/sandboxes/{sandbox_id}/exec:
     parameters:
@@ -487,7 +529,7 @@ components:
 
   responses:
     BadRequest:
-      description: Requête mal formée (JSON illisible) ou paramètres de pagination invalides.
+      description: Requête mal formée, paramètres de pagination invalides ou en-tête invalide.
       content:
         application/problem+json:
           schema: {$ref: "#/components/schemas/Problem"}
@@ -521,8 +563,8 @@ components:
                 instance: /v1/sandboxes/sbx-a1b2c3d4/files
     Conflict:
       description: |
-        Opération incompatible avec l'état courant de la sandbox : pas encore
-        prête (ou en échec, ou terminée), chemin qui désigne un dossier.
+        Opération incompatible avec l'état courant de la sandbox, chemin qui
+        désigne un dossier, ou Idempotency-Key déjà utilisée avec un autre corps.
       content:
         application/problem+json:
           schema: {$ref: "#/components/schemas/Problem"}
@@ -543,6 +585,24 @@ components:
                 status: 409
                 detail: src est un dossier
                 instance: /v1/sandboxes/sbx-a1b2c3d4/files
+            idempotency_key:
+              summary: Clé d'idempotence réutilisée avec un autre contenu
+              value:
+                type: /errors/idempotency-key-reused
+                title: Conflict
+                status: 409
+                detail: Idempotency-Key a déjà été utilisée avec un contenu différent
+                instance: /v1/sandboxes
+    PreconditionFailed:
+      description: L'ETag fourni ne correspond plus à la version courante.
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}
+    PreconditionRequired:
+      description: L'en-tête If-Match est obligatoire pour modifier une sandbox.
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}
     PayloadTooLarge:
       description: Corps trop volumineux (1 Mio au plus).
       content:

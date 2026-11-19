@@ -8,7 +8,8 @@ from starlette.routing import Match
 TITLES = {
     400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed", 409: "Conflict",
     412: "Precondition Failed", 413: "Payload Too Large", 415: "Unsupported Media Type",
-    422: "Unprocessable Content", 429: "Too Many Requests", 503: "Service Unavailable",
+    422: "Unprocessable Content", 428: "Precondition Required", 429: "Too Many Requests",
+    503: "Service Unavailable",
 }
 
 

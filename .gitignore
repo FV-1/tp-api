@@ -3,3 +3,6 @@ __pycache__/
 docs.html
 .hypothesis/
 .schemathesis/
+__pycache__/
+.hypothesis/
+.schemathesis/

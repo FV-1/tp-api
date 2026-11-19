@@ -4,7 +4,9 @@ PORT          ?= 8000
 DOCKER_SOCKET ?= /var/run/docker.sock
 VENV          ?= .venv
 
-.PHONY: help lint mock docs install run test-contract clean
+FLAKY_PORT    ?= 8001
+
+.PHONY: help lint mock docs install run test-contract clean flaky
 
 help:
 	@echo "make lint           vérifier le contrat (Spectral)"
@@ -14,6 +16,7 @@ help:
 	@echo "make run            lancer sandboxd (port $(PORT))"
 	@echo "make test-contract  rejouer le contrat contre sandboxd (Schemathesis)"
 	@echo "make clean          supprimer les conteneurs créés par sandboxd"
+	@echo "make flaky          lancer l'API capricieuse du TP4 (port $(FLAKY_PORT))"
 
 lint:
 	npx -y @stoplight/spectral-cli@6 lint $(SPEC) --ruleset .spectral.yaml
@@ -39,3 +42,7 @@ test-contract:
 
 clean:
 	docker ps -aq --filter label=sandboxd=1 | xargs -r docker rm -f
+
+# API capricieuse du TP4 (training/flaky_api.py). Rejouer un scénario : FLAKY_SEED=42 make flaky
+flaky:
+	$(VENV)/bin/uvicorn training.flaky_api:app --port $(FLAKY_PORT)

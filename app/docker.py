@@ -17,8 +17,8 @@ MAX_OUTPUT = 1024 * 1024  # 1 Mo par flux
 
 # Durcissement : les commandes tournent sous cet utilisateur, jamais root.
 SANDBOX_UID = 1000
-WORKSPACE_MB = int(os.environ.get("SANDBOXD_WORKSPACE_MB", "100"))
-PIDS_LIMIT = int(os.environ.get("SANDBOXD_PIDS_LIMIT", "128"))
+WORKSPACE_MB = int(os.environ.get("SANDBOXD_WORKSPACE_MB") or "100")
+PIDS_LIMIT = int(os.environ.get("SANDBOXD_PIDS_LIMIT") or "128")
 
 _client = httpx.Client(
     transport=httpx.HTTPTransport(uds=SOCKET),

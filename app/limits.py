@@ -13,8 +13,8 @@ from datetime import datetime, timedelta, timezone
 from . import docker
 from .errors import Problem
 
-MAX_SANDBOXES = int(os.environ.get("SANDBOXD_MAX_SANDBOXES", "10"))
-REAP_INTERVAL = float(os.environ.get("SANDBOXD_REAP_INTERVAL", "5"))
+MAX_SANDBOXES = int(os.environ.get("SANDBOXD_MAX_SANDBOXES") or "10")
+REAP_INTERVAL = float(os.environ.get("SANDBOXD_REAP_INTERVAL") or "5")
 ACTIVE = {"pending", "ready"}
 
 log = logging.getLogger("sandboxd.limits")

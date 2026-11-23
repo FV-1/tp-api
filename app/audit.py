@@ -13,7 +13,7 @@ _LOCK = threading.Lock()
 
 
 def record(request: Request, status: int, principal) -> None:
-    path = os.environ.get("SANDBOXD_AUDIT_LOG", "audit.log")
+    path = os.environ.get("SANDBOXD_AUDIT_LOG") or "audit.log"
     event = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "actor": principal.subject if principal is not None else "anonymous",

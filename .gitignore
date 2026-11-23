@@ -7,3 +7,4 @@ audit.log
 __pycache__/
 .hypothesis/
 .schemathesis/
+.env

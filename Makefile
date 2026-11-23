@@ -5,7 +5,12 @@ DOCKER_SOCKET ?= /var/run/docker.sock
 VENV          ?= .venv
 SANDBOXD_OPERATOR_KEY ?=
 
-.PHONY: help lint mock docs install run test-contract flaky clean
+# Secrets lus dans .env (ignoré par Git, modèle : .env.example). S'il manque, make le crée
+# avec des secrets aléatoires : make install puis make run suffisent sur une machine propre.
+-include .env
+export SANDBOXD_OPERATOR_KEY SANDBOXD_JWT_SECRET SANDBOXD_AUDIT_LOG SANDBOXD_MAX_SANDBOXES
+
+.PHONY: help lint mock docs install run test-contract test-auth flaky clean
 
 help:
 	@echo "make lint           vérifier le contrat (Spectral)"
@@ -14,6 +19,7 @@ help:
 	@echo "make install        installer les dépendances Python"
 	@echo "make run            lancer sandboxd (port $(PORT))"
 	@echo "make test-contract  rejouer le contrat contre sandboxd (Schemathesis)"
+	@echo "make test-auth      tests de sécurité : authentification, puis durcissement (sandboxd lancé)"
 	@echo "make flaky          lancer l'API d'entraînement capricieuse (TP4, port 8001)"
 	@echo "make clean          supprimer les conteneurs créés par sandboxd"
 
@@ -30,7 +36,11 @@ install:
 	python3 -m venv $(VENV)
 	$(VENV)/bin/pip install -q -r requirements.txt
 
-run:
+.env:
+	@python3 -c "import secrets; print('SANDBOXD_OPERATOR_KEY=' + secrets.token_urlsafe(32)); print('SANDBOXD_JWT_SECRET=' + secrets.token_urlsafe(32)); print('SANDBOXD_AUDIT_LOG=audit.log')" > .env
+	@echo ".env créé avec des secrets aléatoires (ignoré par Git)"
+
+run: .env
 	DOCKER_SOCKET=$(DOCKER_SOCKET) $(VENV)/bin/uvicorn app.main:app --reload --port $(PORT)
 
 # positive_data_acceptance est exclu : il considère comme une faute les refus
@@ -39,6 +49,10 @@ test-contract:
 	$(VENV)/bin/schemathesis run $(SPEC) --url http://localhost:$(PORT) \
 		--header "X-Operator-Key: $(SANDBOXD_OPERATOR_KEY)" -n 20 -w 1 \
 		--exclude-checks positive_data_acceptance
+
+test-auth:
+	$(VENV)/bin/python -m unittest -v tests.test_auth
+	SANDBOXD_URL=http://localhost:$(PORT) $(VENV)/bin/python -m tests.test_durcissement
 
 flaky:
 	$(VENV)/bin/uvicorn training.flaky_api:app --port 8001

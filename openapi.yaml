@@ -34,7 +34,11 @@ paths:
       security:
         - OperatorKey: []
       summary: Créer une sandbox
-      description: Accepte la création de façon asynchrone. La sandbox est initialement en état pending.
+      description: |
+        Accepte la création de façon asynchrone. La sandbox est initialement en état pending.
+        Quota : au-delà de SANDBOXD_MAX_SANDBOXES sandboxes actives (10 par défaut), la
+        création est refusée en 409 `quota-exceeded` (et non 429 : il ne sert à rien de réessayer).
+        Durée de vie : une fois `expires_at` passé, la sandbox et son conteneur sont détruits.
       parameters:
         - name: Idempotency-Key
           in: header
@@ -460,8 +464,9 @@ components:
       description: |
         Chemin du fichier, **relatif à `/workspace`**. Refusé (422) s'il est
         absolu (commence par `/`), s'il contient un segment `..`, un segment
-        vide (`a//b`, `a/`), un caractère de contrôle, ou un nom de plus de
-        255 octets (limite de Linux).
+        vide (`a//b`, `a/`), un caractère de contrôle, un nom de plus de
+        255 octets (limite de Linux), ou s'il passe par un lien symbolique
+        (`ln -s /etc /workspace/etc` ne permet pas de lire `etc/passwd`).
       schema:
         type: string
         minLength: 1
@@ -700,12 +705,29 @@ components:
     Conflict:
       description: |
         Opération incompatible avec l'état courant de la sandbox, chemin qui
-        désigne un dossier ou passe par un fichier, ou Idempotency-Key déjà
-        utilisée avec un autre corps.
+        désigne un dossier ou passe par un fichier, Idempotency-Key déjà
+        utilisée avec un autre corps, quota de sandboxes atteint, ou sandbox
+        saturée (plus de processus disponibles) qu'il faut détruire.
       content:
         application/problem+json:
           schema: {$ref: "#/components/schemas/Problem"}
           examples:
+            quota_exceeded:
+              summary: Quota de sandboxes atteint
+              value:
+                type: /errors/quota-exceeded
+                title: Conflict
+                status: 409
+                detail: "10 sandboxes actives, le quota est de 10 : détruisez-en une"
+                instance: /v1/sandboxes
+            sandbox_unusable:
+              summary: Sandbox saturée
+              value:
+                type: /errors/sandbox-unusable
+                title: Conflict
+                status: 409
+                detail: "la sandbox ne peut plus exécuter de vérification : détruisez-la"
+                instance: /v1/sandboxes/sbx-a1b2c3d4/files
             not_ready:
               summary: Sandbox pas prête
               value:

@@ -3,6 +3,7 @@ SPEC          ?= openapi.yaml
 PORT          ?= 8000
 DOCKER_SOCKET ?= /var/run/docker.sock
 VENV          ?= .venv
+SANDBOXD_OPERATOR_KEY ?=
 
 .PHONY: help lint mock docs install run test-contract flaky clean
 
@@ -35,7 +36,8 @@ run:
 # positive_data_acceptance est exclu : il considère comme une faute les refus
 # légitimes liés à l'état (jeton de page inconnu, If-Match périmé, clé réutilisée).
 test-contract:
-	$(VENV)/bin/schemathesis run $(SPEC) --url http://localhost:$(PORT) -n 20 -w 1 \
+	$(VENV)/bin/schemathesis run $(SPEC) --url http://localhost:$(PORT) \
+		--header "X-Operator-Key: $(SANDBOXD_OPERATOR_KEY)" -n 20 -w 1 \
 		--exclude-checks positive_data_acceptance
 
 flaky:

@@ -20,8 +20,10 @@ import httpx
 from .transport import ApiError, request
 
 API = os.environ.get("SANDBOXD_URL", "http://localhost:8000")
-# Clé opérateur ou jeton d'agent, envoyé en Authorization: Bearer (jamais écrit dans le code)
-TOKEN = os.environ.get("SANDBOXD_TOKEN") or os.environ.get("SANDBOXD_API_KEY")
+# Secrets lus dans l'environnement, jamais écrits dans le code :
+# la clé opérateur part en X-Operator-Key, un jeton d'agent en Authorization: Bearer.
+OPERATOR_KEY = os.environ.get("SANDBOXD_OPERATOR_KEY")
+AGENT_TOKEN = os.environ.get("SANDBOXD_TOKEN")
 WAIT_TIMEOUT = 120  # secondes au plus pour create --wait
 EXEC_MARGIN = 10    # secondes accordées en plus du timeout de la commande
 
@@ -128,7 +130,11 @@ def main() -> int:
     args = parser.parse_args()
     if getattr(args, "cmd", None) and args.cmd[:1] == ["--"]:
         args.cmd = args.cmd[1:]
-    headers = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
+    headers = {}
+    if AGENT_TOKEN:
+        headers["Authorization"] = f"Bearer {AGENT_TOKEN}"
+    elif OPERATOR_KEY:
+        headers["X-Operator-Key"] = OPERATOR_KEY
     with httpx.Client(base_url=API, headers=headers) as client:  # un seul client : connexions réutilisées
         try:
             return args.func(client, args) or 0

@@ -31,6 +31,8 @@ paths:
     post:
       tags: [sandboxes]
       operationId: createSandbox
+      security:
+        - OperatorKey: []
       summary: Créer une sandbox
       description: Accepte la création de façon asynchrone. La sandbox est initialement en état pending.
       parameters:
@@ -84,6 +86,10 @@ paths:
                 expires_at: "2026-10-28T14:10:00Z"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "422":
@@ -95,6 +101,8 @@ paths:
     get:
       tags: [sandboxes]
       operationId: listSandboxes
+      security:
+        - OperatorKey: []
       summary: Lister les sandboxes
       description: Renvoie une page de sandboxes, éventuellement filtrée par état.
       parameters:
@@ -125,6 +133,10 @@ paths:
                 $ref: "#/components/schemas/SandboxList"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
 
   /v1/sandboxes/{sandbox_id}:
     parameters:
@@ -132,6 +144,9 @@ paths:
     get:
       tags: [sandboxes]
       operationId: getSandbox
+      security:
+        - OperatorKey: []
+        - AgentToken: []
       summary: Consulter une sandbox
       description: Renvoie l'état courant de la sandbox.
       responses:
@@ -148,9 +163,13 @@ paths:
                 $ref: "#/components/schemas/Sandbox"
         "404":
           $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
     patch:
       tags: [sandboxes]
       operationId: updateSandbox
+      security:
+        - OperatorKey: []
       summary: Prolonger la durée de vie d'une sandbox
       description: Met à jour la durée de vie avec JSON Merge Patch.
       parameters:
@@ -184,6 +203,10 @@ paths:
                 $ref: "#/components/schemas/Sandbox"
         "404":
           $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "409":
           $ref: "#/components/responses/Conflict"
         "400":
@@ -199,6 +222,8 @@ paths:
     delete:
       tags: [sandboxes]
       operationId: deleteSandbox
+      security:
+        - OperatorKey: []
       summary: Détruire une sandbox
       description: Supprime la sandbox et son conteneur associé.
       responses:
@@ -206,8 +231,36 @@ paths:
           description: Sandbox détruite.
         "404":
           $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/sandboxes/{sandbox_id}/tokens:
+    parameters:
+      - $ref: "#/components/parameters/SandboxId"
+    post:
+      tags: [sandboxes]
+      operationId: createAgentToken
+      security:
+        - OperatorKey: []
+      summary: Émettre un jeton d'agent
+      description: Émet un jeton Bearer JWT limité à cette sandbox et valable 15 minutes.
+      responses:
+        "201":
+          description: Jeton d'agent créé.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentToken"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /v1/sandboxes/{sandbox_id}/exec:
     parameters:
@@ -215,6 +268,9 @@ paths:
     post:
       tags: [exec]
       operationId: execCommand
+      security:
+        - OperatorKey: []
+        - AgentToken: []
       summary: Exécuter une commande dans la sandbox
       description: |
         Exécute une commande dans `/workspace`, attend sa fin et renvoie sa sortie.
@@ -289,6 +345,8 @@ paths:
           $ref: "#/components/responses/ValidationFailed"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 
   /v1/sandboxes/{sandbox_id}/files:
     parameters:
@@ -297,6 +355,9 @@ paths:
     get:
       tags: [files]
       operationId: readFile
+      security:
+        - OperatorKey: []
+        - AgentToken: []
       summary: Lire un fichier de /workspace
       description: |
         Renvoie le contenu brut du fichier, octet pour octet.
@@ -320,9 +381,14 @@ paths:
           $ref: "#/components/responses/ValidationFailed"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
     put:
       tags: [files]
       operationId: writeFile
+      security:
+        - OperatorKey: []
+        - AgentToken: []
       summary: Écrire un fichier dans /workspace
       description: |
         Crée le fichier, ou le remplace entièrement s'il existe. Les dossiers
@@ -355,6 +421,8 @@ paths:
           $ref: "#/components/responses/ValidationFailed"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 
   /healthz:
     get:
@@ -373,6 +441,17 @@ paths:
                   status: {type: string, enum: [ok]}
 
 components:
+  securitySchemes:
+    OperatorKey:
+      type: apiKey
+      in: header
+      name: X-Operator-Key
+      description: Clé opérateur configurée dans SANDBOXD_OPERATOR_KEY.
+    AgentToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Jeton d'agent limité à une sandbox et valable 15 minutes.
   parameters:
     FilePath:
       name: path
@@ -497,6 +576,19 @@ components:
           type: string
         instance:
           type: string
+    AgentToken:
+      type: object
+      additionalProperties: false
+      required: [access_token, token_type, expires_in]
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          enum: [900]
     ExecRequest:
       type: object
       additionalProperties: false
@@ -558,6 +650,20 @@ components:
           example: false
 
   responses:
+    Unauthorized:
+      description: Clé opérateur absente/invalide ou jeton agent absent/invalide/expiré.
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}
+    Forbidden:
+      description: Le jeton d'agent ne permet pas cette action opérateur.
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}
     BadRequest:
       description: Requête mal formée, paramètres de pagination invalides ou en-tête invalide.
       content:

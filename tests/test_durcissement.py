@@ -4,7 +4,7 @@
     .venv/bin/python -m tests.test_durcissement --quota 3  # + quota (sandboxd lancé avec SANDBOXD_MAX_SANDBOXES=3)
     .venv/bin/python -m tests.test_durcissement --ttl      # + expiration (≈ 70 s)
 
-SANDBOXD_URL (défaut http://localhost:8000) et SANDBOXD_API_KEY (si l'authentification est active).
+SANDBOXD_URL (défaut http://localhost:8000) et SANDBOXD_OPERATOR_KEY (la clé opérateur).
 Code de sortie 0 si tout passe.
 """
 import os
@@ -14,9 +14,8 @@ import time
 import httpx
 
 API = os.environ.get("SANDBOXD_URL", "http://localhost:8000")
-KEY = os.environ.get("SANDBOXD_API_KEY")
-client = httpx.Client(base_url=API, timeout=90,
-                      headers={"Authorization": f"Bearer {KEY}"} if KEY else {})
+KEY = os.environ.get("SANDBOXD_OPERATOR_KEY", "")
+client = httpx.Client(base_url=API, timeout=90, headers={"X-Operator-Key": KEY})
 failures = 0
 
 

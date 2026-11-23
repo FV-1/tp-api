@@ -5,8 +5,8 @@ Binôme : Victor Falc'hun / Lea Debruyne
 Une fiche par faille trouvée ou subie : reproduction, impact, correctif, test. Les tests automatiques sont dans `tests/test_durcissement.py` :
 
 ```bash
-make run                                                  # terminal 1
-.venv/bin/python -m tests.test_durcissement --quota 10 --ttl   # terminal 2
+make run                                                       # terminal 1 (variables de .env.example exportées)
+.venv/bin/python -m tests.test_durcissement --quota 10 --ttl   # terminal 2, avec SANDBOXD_OPERATOR_KEY
 ```
 
 ## Faille 1 — Sortie de `/workspace` par un lien symbolique (trouvée chez nous)

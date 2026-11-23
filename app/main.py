@@ -19,11 +19,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from . import docker, limits
+from . import auth, docker, limits
 from .errors import Problem, install
 
 app = FastAPI(title="sandboxd", openapi_url=None, docs_url=None, redoc_url=None)
 install(app)
+auth.install(app)
 
 SANDBOXES: dict[str, dict] = {}  # id -> sandbox (en mémoire : perdue au redémarrage)
 IDEMPOTENCY_KEYS: dict[str, tuple[dict, str]] = {}
@@ -162,6 +163,13 @@ def get_sandbox(sandbox_id: str):
     with LOCK:
         sb = get_or_404(sandbox_id)
         return JSONResponse(public(sb), headers={"ETag": etag(sb)})
+
+
+@app.post("/v1/sandboxes/{sandbox_id}/tokens", status_code=201)
+def create_agent_token(sandbox_id: str):
+    with LOCK:
+        get_or_404(sandbox_id)
+    return auth.issue_agent_token(sandbox_id)
 
 
 @app.post("/v1/sandboxes", status_code=202)

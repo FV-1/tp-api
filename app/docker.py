@@ -15,6 +15,11 @@ SOCKET = os.environ.get("DOCKER_SOCKET", "/var/run/docker.sock")
 WORKSPACE = "/workspace"
 MAX_OUTPUT = 1024 * 1024  # 1 Mo par flux
 
+# Durcissement : les commandes tournent sous cet utilisateur, jamais root.
+SANDBOX_UID = 1000
+WORKSPACE_MB = int(os.environ.get("SANDBOXD_WORKSPACE_MB", "100"))
+PIDS_LIMIT = int(os.environ.get("SANDBOXD_PIDS_LIMIT", "128"))
+
 _client = httpx.Client(
     transport=httpx.HTTPTransport(uds=SOCKET),
     base_url="http://docker",
@@ -59,26 +64,50 @@ def pull_image(image: str) -> None:
 
 
 def create_container(image: str, cpus: float, memory_mb: int, labels: dict[str, str]) -> str:
-    """POST /containers/create, puis /start. Renvoie l'identifiant du conteneur.
+    """POST /volumes/create, /containers/create, puis /start. Renvoie l'identifiant du conteneur.
 
-    Le conteneur reste vivant (sleep infinity) et travaille dans /workspace.
-    Le durcissement (réseau coupé, utilisateur non root…) viendra au TP6.
+    Le conteneur reste vivant (sleep infinity) et travaille dans /workspace. Il est durci :
+    réseau coupé, utilisateur non root, racine en lecture seule, aucune capability,
+    no-new-privileges, nombre de processus limité, pas de swap.
+
+    Seuls /workspace et /tmp sont inscriptibles. /workspace est un volume tmpfs dédié,
+    qui appartient à l'utilisateur de la sandbox et dont la taille est bornée : un tmpfs
+    déclaré dans HostConfig.Tmpfs serait invisible de l'API d'archive (read_file, write_file).
     """
+    volume = _check(_client.post("/volumes/create", json={
+        "Driver": "local",
+        "DriverOpts": {"type": "tmpfs", "device": "tmpfs",
+                       "o": f"uid={SANDBOX_UID},gid={SANDBOX_UID},mode=0755,size={WORKSPACE_MB}m"},
+        "Labels": labels,
+    })).json()["Name"]
     body = {
         "Image": image,
         "Cmd": ["sleep", "infinity"],
         "WorkingDir": WORKSPACE,
+        "User": f"{SANDBOX_UID}:{SANDBOX_UID}",
         "Labels": labels,
         "HostConfig": {
             "NanoCpus": int(cpus * 1_000_000_000),
             "Memory": memory_mb * 1024 * 1024,
+            "MemorySwap": memory_mb * 1024 * 1024,
+            "NetworkMode": "none",
+            "ReadonlyRootfs": True,
+            "CapDrop": ["ALL"],
+            "SecurityOpt": ["no-new-privileges"],
+            "PidsLimit": PIDS_LIMIT,
+            "Tmpfs": {"/tmp": "rw,nosuid,nodev,size=64m"},
+            "Mounts": [{"Type": "volume", "Source": volume, "Target": WORKSPACE}],
         },
     }
-    r = _client.post("/containers/create", json=body)
-    if r.status_code == 404:  # image absente : on la télécharge, puis on réessaie
-        pull_image(image)
+    try:
         r = _client.post("/containers/create", json=body)
-    cid = _check(r).json()["Id"]
+        if r.status_code == 404:  # image absente : on la télécharge, puis on réessaie
+            pull_image(image)
+            r = _client.post("/containers/create", json=body)
+        cid = _check(r).json()["Id"]
+    except (DockerError, httpx.HTTPError):
+        _client.delete(f"/volumes/{volume}")
+        raise
     _check(_client.post(f"/containers/{cid}/start"))
     return cid
 
@@ -92,10 +121,17 @@ def container_state(cid: str) -> str | None:
 
 
 def remove_container(cid: str) -> None:
-    """DELETE /containers/{id}?force=true. Ne dit rien s'il n'existe déjà plus."""
-    r = _client.delete(f"/containers/{cid}", params={"force": "true"})
+    """DELETE /containers/{id}?force=true, puis son volume /workspace. Ne dit rien s'il n'existe déjà plus."""
+    info = _client.get(f"/containers/{cid}/json")
+    volumes = [m["Name"] for m in info.json().get("Mounts", []) if m.get("Type") == "volume"] \
+        if info.status_code == 200 else []
+    r = _client.delete(f"/containers/{cid}", params={"force": "true", "v": "true"})
     if r.status_code != 404:
         _check(r)
+    for name in volumes:
+        r = _client.delete(f"/volumes/{name}")
+        if r.status_code not in (204, 404):
+            _check(r)
 
 
 def _demux(raw: bytes) -> tuple[bytes, bytes]:
@@ -156,7 +192,8 @@ def exec_command(cid: str, cmd: list[str], timeout_seconds: int) -> dict:
 def read_file(cid: str, path: str) -> bytes | None:
     """GET /containers/{id}/archive : renvoie le contenu, ou None si absent.
 
-    Attention : `path` n'est pas encore vérifié (rendez-le sûr au TP6).
+    Le chemin doit avoir été vérifié avant (main.check_path, main.check_no_symlink) :
+    Docker suit les liens symboliques du chemin.
     """
     r = _client.get(f"/containers/{cid}/archive", params={"path": f"{WORKSPACE}/{path}"})
     if r.status_code == 404:
@@ -172,13 +209,24 @@ def read_file(cid: str, path: str) -> bytes | None:
 def write_file(cid: str, path: str, data: bytes) -> bool:
     """PUT /containers/{id}/archive : écrit le fichier. Renvoie True s'il a été créé.
 
-    Attention : `path` n'est pas encore vérifié (rendez-le sûr au TP6).
+    Le chemin doit avoir été vérifié avant (main.check_path, main.check_no_symlink).
+    Le fichier et ses dossiers parents appartiennent à l'utilisateur de la sandbox,
+    pour qu'il puisse ensuite les modifier.
     """
     existed = read_file(cid, path) is not None
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
+        parts = path.split("/")
+        for i in range(1, len(parts)):
+            folder = tarfile.TarInfo(name="/".join(parts[:i]))
+            folder.type, folder.mode = tarfile.DIRTYPE, 0o755
+            folder.uid = folder.gid = SANDBOX_UID
+            folder.mtime = int(time.time())
+            tar.addfile(folder)
         info = tarfile.TarInfo(name=path)
         info.size = len(data)
+        info.mode = 0o644
+        info.uid = info.gid = SANDBOX_UID
         info.mtime = int(time.time())
         tar.addfile(info, io.BytesIO(data))
     r = _client.put(f"/containers/{cid}/archive", params={"path": WORKSPACE}, content=buf.getvalue(),

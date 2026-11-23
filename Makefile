@@ -43,3 +43,4 @@ flaky:
 
 clean:
 	docker ps -aq --filter label=sandboxd=1 | xargs -r docker rm -f
+	docker volume ls -q --filter label=sandboxd=1 | xargs -r docker volume rm

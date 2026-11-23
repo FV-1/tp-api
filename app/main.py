@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from . import docker
+from . import docker, limits
 from .errors import Problem, install
 
 app = FastAPI(title="sandboxd", openapi_url=None, docs_url=None, redoc_url=None)
@@ -186,6 +186,7 @@ async def create_sandbox(request: Request):
                 headers={"Location": f"/v1/sandboxes/{sandbox_id}", "ETag": etag(sb)},
             )
 
+        limits.check_quota(SANDBOXES)
         sandbox_id = new_id()
         while sandbox_id in SANDBOXES:
             sandbox_id = new_id()
@@ -360,6 +361,29 @@ async def is_dir(cid: str, path: str) -> bool:
     return result["exit_code"] == 0
 
 
+# Vérifie chaque élément du chemin, depuis /workspace : aucun ne doit être un lien symbolique.
+NO_SYMLINK = 'set -f; IFS=/; p=; for part in $1; do p=${p:+$p/}$part; ' \
+             'if [ -L "$p" ]; then echo "$p"; exit 3; fi; done'
+
+
+async def check_no_symlink(cid: str, path: str) -> None:
+    """422 si le chemin passe par un lien symbolique.
+
+    Docker suit les liens de l'API d'archive : avec ln -s /etc /workspace/etc, lire
+    etc/passwd sortirait de /workspace. On refuse donc tout lien dans le chemin.
+    """
+    result = await call_docker(docker.exec_command, cid, ["sh", "-c", NO_SYMLINK, "sh", path], 5)
+    if result["exit_code"] == 3:
+        raise Problem(422, "validation", f"path : {result['stdout'].strip()} est un lien symbolique")
+    if result["exit_code"] != 0:  # vérification impossible (ex. processus épuisés) : on refuse
+        raise Problem(409, "sandbox-unusable", "la sandbox ne peut plus exécuter de vérification : détruisez-la")
+
+
+@app.on_event("startup")
+def start_limits():
+    limits.start_reaper(SANDBOXES, LOCK)
+
+
 @app.post("/v1/sandboxes/{sandbox_id}/exec")
 async def exec_command(sandbox_id: str, request: Request):
     cid = get_ready(sandbox_id)
@@ -371,6 +395,7 @@ async def exec_command(sandbox_id: str, request: Request):
 async def read_file(sandbox_id: str, path: str):
     cid = get_ready(sandbox_id)
     check_path(path)
+    await check_no_symlink(cid, path)
     data = await call_docker(docker.read_file, cid, path)
     if data is None:
         if await is_dir(cid, path):
@@ -389,6 +414,7 @@ async def write_file(sandbox_id: str, path: str, request: Request):
     data = await request.body()
     if len(data) > MAX_FILE:
         raise Problem(413, "payload-too-large", "le fichier dépasse 1 Mio")
+    await check_no_symlink(cid, path)
     if await is_dir(cid, path):
         raise Problem(409, "is-a-directory", f"{path} est un dossier")
     created = await call_docker(docker.write_file, cid, path, data)

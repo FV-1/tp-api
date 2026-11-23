@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
 docs.html
+audit.log
 .hypothesis/
 .schemathesis/
 __pycache__/
